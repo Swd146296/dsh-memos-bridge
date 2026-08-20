@@ -13,7 +13,8 @@ Usage:
 `--search` probe additionally needs the MemOS LLM and embedding endpoints
 reachable from this machine (see README "Host-run endpoint override").
 
-Exit code 0 on success, 1 on failure.
+Exit code 0 on success; non-zero on failure, counting the number of failed
+probes (add_memory, and search_memories when --search is given).
 """
 
 from __future__ import annotations
