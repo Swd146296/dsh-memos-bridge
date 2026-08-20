@@ -192,7 +192,13 @@ def _apply_patch_file(
     path: Path, desc: str, pre: str, post: str, marker: str, replace_all: bool, tokenizer_path: Path | None
 ) -> bool:
     """Apply one textual patch. Returns True when the file changed."""
-    text = path.read_text(encoding="utf-8")
+    # Read raw bytes to detect the file's line-ending style, then normalize to
+    # '\n' for matching. Writing with the original style keeps the patch to the
+    # intended lines only: without this, text-mode write on Windows rewrites
+    # the whole file as CRLF (MemOS sources are LF, so every line would diff).
+    raw = path.read_bytes()
+    eol = "\r\n" if b"\r\n" in raw else "\n"
+    text = raw.decode("utf-8").replace("\r\n", "\n")
 
     if marker in text:
         return False  # already applied
@@ -211,7 +217,7 @@ def _apply_patch_file(
         new_text = text.replace(pre, post, 1)
     if new_text == text:
         raise SystemExit(f"FAILED: {path} did not change for: {desc}")
-    path.write_text(new_text, encoding="utf-8")
+    path.write_text(new_text, encoding="utf-8", newline=eol)
     return True
 
 
