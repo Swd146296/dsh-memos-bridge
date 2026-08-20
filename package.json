@@ -12,7 +12,10 @@
     "README.md",
     "README.zh.md",
     "LICENSE",
-    "scripts/"
+    "scripts/",
+    "setup.ps1",
+    "setup.sh",
+    "examples/"
   ],
   "dsh": {
     "bundle": {
