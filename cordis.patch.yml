@@ -1,0 +1,31 @@
+# Patch layer contributed by the dsh-memos-bridge bundle.
+#
+# Inserts one @deepseek-ai/dsh-mcp-client instance that spawns the MemOS MCP
+# server over stdio. Configure paths through environment variables (the Loader
+# evaluates `!!js process.env.*` at mount time); a missing MemOS install leaves
+# the row pending (failOnStartupError: false) instead of failing the boot.
+#
+# Environment knobs:
+#   MEMOS_PYTHON      - python interpreter of the MemOS venv (default: python)
+#   MEMOS_HOME        - the MemOS repository directory used as the child cwd
+#                       (default: '' = inherit the dsh process cwd; MemOS reads
+#                       its .env from this directory, so set it when MemOS is
+#                       not the launch cwd)
+#   MEMOS_MCP_SERVER  - serverName / tool namespace (default: memos)
+#
+# For host-run deployments whose LLM/embedding gateway is published on
+# 127.0.0.1 while the MemOS .env points at host.docker.internal, add an `env`
+# block overriding OPENAI_API_BASE / MOS_EMBEDDER_API_BASE / MEMRADER_API_BASE
+# / QWEN_API_BASE (see README "Host-run endpoint override").
+- insert:
+    - id: memos-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: !!js process.env.MEMOS_MCP_SERVER ?? 'memos'
+        command: !!js process.env.MEMOS_PYTHON ?? 'python'
+        args:
+          - -m
+          - memos.api.mcp_serve
+        cwd: !!js process.env.MEMOS_HOME ?? ''
+        failOnStartupError: false
