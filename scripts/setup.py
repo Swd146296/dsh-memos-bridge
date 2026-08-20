@@ -62,7 +62,11 @@ def main() -> int:
         if not py.exists():
             print(f"Creating virtualenv at {venv}")
             _run([sys.executable, "-m", "venv", str(venv)])
-        _run([str(py), "-m", "pip", "install", "--upgrade", "pip"])
+            # Fresh venvs carry an older pip; upgrade once at creation. On
+            # re-runs the venv already exists, so we skip the upgrade: it would
+            # otherwise hit the package index and fail on offline machines even
+            # when the environment is already fully set up.
+            _run([str(py), "-m", "pip", "install", "--upgrade", "pip"])
         spec = ".[" + ",".join(PIP_EXTRAS) + "]"
         _run([str(py), "-m", "pip", "install", "-e", spec, *PIP_EXTRA_PACKAGES], cwd=memos)
 
