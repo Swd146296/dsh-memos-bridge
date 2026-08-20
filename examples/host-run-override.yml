@@ -1,0 +1,22 @@
+# Host-run endpoint override example.
+#
+# Copy this block into YOUR profile's cordis.patch.yml (applied after the
+# bundle layer) when the MemOS LLM/embedding gateway is published on the host
+# loopback while the MemOS .env targets host.docker.internal. An id-targeted
+# patch replaces the row's ENTIRE config, so every key is restated here.
+- id: memos-mcp
+  config:
+    transport: stdio
+    serverName: memos
+    command: 'C:/path/to/MemOS/.venv/Scripts/python.exe'
+    args:
+      - -m
+      - memos.api.mcp_serve
+    cwd: 'C:/path/to/MemOS'
+    env:
+      OPENAI_API_BASE: 'http://127.0.0.1:18181/v1'
+      MOS_EMBEDDER_API_BASE: 'http://127.0.0.1:18182/compatible-mode/v1'
+      MEMRADER_API_BASE: 'http://127.0.0.1:18181/v1'
+      QWEN_API_BASE: 'http://127.0.0.1:18181/v1'
+    toolCallTimeoutMs: 60000
+    failOnStartupError: false
