@@ -179,6 +179,39 @@ _p(
     "local-tokenizers",
 )
 
+# 5. graph_dbs / retrieve modules: route stray debug prints to stderr so they
+#    cannot corrupt the MCP stdio protocol channel during searches. The tree
+#    memory search path prints raw Cypher queries (and BM25 hit lines) to
+#    stdout; an MCP client sees them as garbage JSON-RPC.
+_PRINT_REDIRECT = (
+    "# dsh-memos-bridge: keep stray debug prints off the MCP stdio channel.\n"
+    "import builtins as _dsh_builtins\n"
+    "\n"
+    "\n"
+    "def print(*args, **kwargs):\n"
+    '    kwargs.setdefault("file", __import__("sys").stderr)\n'
+    "    _dsh_builtins.print(*args, **kwargs)\n"
+)
+for _rel in (
+    "src/memos/graph_dbs/neo4j.py",
+    "src/memos/graph_dbs/neo4j_community.py",
+    "src/memos/memories/textual/tree_text_memory/retrieve/bm25_util.py",
+):
+    _p(
+        _rel,
+        "route stray prints to stderr",
+        "logger = get_logger(__name__)",
+        "logger = get_logger(__name__)\n\n" + _PRINT_REDIRECT,
+        "def print(*args, **kwargs):",
+    )
+_p(
+    "src/memos/memories/textual/tree_text_memory/retrieve/internet_retriever.py",
+    "route stray print to stderr (no logger in module)",
+    'print(f"Google search request failed: {e}")',
+    'print(f"Google search request failed: {e}", file=__import__("sys").stderr)',
+    'file=__import__("sys").stderr',
+)
+
 
 def _tokenizer_line(tokenizer_path: Path) -> str:
     return (
