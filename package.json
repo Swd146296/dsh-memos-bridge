@@ -7,7 +7,9 @@
     "url": "git+https://github.com/Swd146296/dsh-memos-bridge.git"
   },
   "type": "module",
+  "main": "index.js",
   "files": [
+    "index.js",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",

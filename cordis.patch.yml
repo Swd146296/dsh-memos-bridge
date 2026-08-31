@@ -1,31 +1,42 @@
 # Patch layer contributed by the dsh-memos-bridge bundle.
 #
-# Inserts one @deepseek-ai/dsh-mcp-client instance that spawns the MemOS MCP
-# server over stdio. Configure paths through environment variables (the Loader
-# evaluates `!!js process.env.*` at mount time); a missing MemOS install leaves
-# the row pending (failOnStartupError: false) instead of failing the boot.
+# Two rows:
+#   1. `memos-bridge`  - this package's provider plugin; exposes `memosBridge`
+#                        with the venv python, this package's MCP runner path,
+#                        and the MemOS working directory (all env-configurable).
+#   2. `memos-mcp`     - one @deepseek-ai/dsh-mcp-client instance that spawns
+#                        the MemOS MCP server over stdio via the runner. The
+#                        runner preflights Neo4j (clear message + fast exit),
+#                        warns on a missing LLM/embedding gateway, and defaults
+#                        the endpoints to 127.0.0.1 for host-run deployments.
 #
-# Environment knobs:
-#   MEMOS_PYTHON      - python interpreter of the MemOS venv (default: python)
-#   MEMOS_HOME        - the MemOS repository directory used as the child cwd
-#                       (default: '' = inherit the dsh process cwd; MemOS reads
-#                       its .env from this directory, so set it when MemOS is
-#                       not the launch cwd)
+# Environment knobs (read at mount time via `!!js` / by the provider):
+#   MEMOS_PYTHON      - python of the MemOS venv (default: python)
+#   MEMOS_HOME        - MemOS repo directory used as the child cwd (default:
+#                       '' = inherit the dsh process cwd; MemOS reads its .env
+#                       from this directory, so set it unless MemOS is the
+#                       launch directory)
 #   MEMOS_MCP_SERVER  - serverName / tool namespace (default: memos)
 #
-# For host-run deployments whose LLM/embedding gateway is published on
-# 127.0.0.1 while the MemOS .env points at host.docker.internal, add an `env`
-# block overriding OPENAI_API_BASE / MOS_EMBEDDER_API_BASE / MEMRADER_API_BASE
-# / QWEN_API_BASE (see README "Host-run endpoint override").
+# Reconnect: the runner exits fast with an actionable message when Neo4j is
+# down; with the generous retry budget below, starting the MemOS docker stack
+# later recovers automatically (no GUI restart).
 - insert:
+    - id: memos-bridge
+      name: dsh-memos-bridge
     - id: memos-mcp
       name: '@deepseek-ai/dsh-mcp-client'
+      inject: [memosBridge]
       config:
         transport: stdio
         serverName: !!js process.env.MEMOS_MCP_SERVER ?? 'memos'
-        command: !!js process.env.MEMOS_PYTHON ?? 'python'
+        command: !!js ctx.memosBridge.python
         args:
-          - -m
-          - memos.api.mcp_serve
-        cwd: !!js process.env.MEMOS_HOME ?? ''
+          - !!js ctx.memosBridge.runner
+        cwd: !!js ctx.memosBridge.cwd
         failOnStartupError: false
+        reconnect:
+          enabled: true
+          initialDelayMs: 5000
+          maxDelayMs: 30000
+          maxAttempts: 100000
