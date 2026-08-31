@@ -41,6 +41,15 @@ DeepSeek Harness（web profile）
 
 ## 快速开始
 
+**0. 先启动 MemOS 基础设施**——MCP server 启动时必须连 Neo4j，search/chat 还需要 LLM 与 Embedding 网关：
+
+```sh
+docker compose -f C:\path\to\MemOS\docker\docker-compose.yml up -d   # Neo4j + Qdrant + MemOS API
+# 并确保 LLM/Embedding 网关（如 :18181/:18182）在运行
+```
+
+如果 `dsh` 启动时栈还没起来，runner 会打印一行清晰的提示并快速退出；客户端的重连策略会持续重试（上限 `maxAttempts`），之后把栈启动起来即可自动恢复，**无需重启 GUI**。
+
 **1. 准备 MemOS 侧**（venv + 依赖 + 源码补丁 + 本地 tokenizer）：
 
 ```powershell
@@ -82,7 +91,9 @@ python scripts/smoke_test.py --python C:\path\to\MemOS\.venv\Scripts\python.exe 
 
 ## 配置
 
-组合包的 patch 插入一行 `@deepseek-ai/dsh-mcp-client`（`id: memos-mcp`，`serverName: memos`）。挂载时由 `!!js` 读取的环境变量：
+组合包的 patch 插入两行：`memos-bridge` 提供方（通过 `memosBridge` 服务暴露 venv python、本包 runner 路径、MemOS cwd）和 `memos-mcp`（`@deepseek-ai/dsh-mcp-client` 行，`serverName: memos`，经 stdio 拉起 runner）。runner 会**预检** Neo4j（硬依赖：一行清晰报错并快速退出）、在 LLM/Embedding 网关不可用时给出警告，并默认把端点指向 `127.0.0.1`（宿主机部署）。
+
+挂载时读取的环境变量：
 
 | 变量 | 默认值 | 含义 |
 | --- | --- | --- |
@@ -98,7 +109,7 @@ python scripts/smoke_test.py --python C:\path\to\MemOS\.venv\Scripts\python.exe 
     transport: stdio
     serverName: memos
     command: 'C:/path/to/MemOS/.venv/Scripts/python.exe'
-    args: ['-m', 'memos.api.mcp_serve']
+    args: ['C:/path/to/dsh-memos-bridge/scripts/memos_mcp_runner.py']
     cwd: 'C:/path/to/MemOS'
     toolCallTimeoutMs: 60000
     failOnStartupError: false
@@ -106,7 +117,7 @@ python scripts/smoke_test.py --python C:\path\to\MemOS\.venv\Scripts\python.exe 
 
 ## 宿主机端点覆盖
 
-MemOS 的 `.env` 通常指向 `host.docker.internal:18181/18182`（在 MemOS 的 docker 网络*内部*有效）。当 MCP 子进程跑在**宿主机**上时，端点必须从宿主机可达。如果网关发布在宿主机回环地址（或只能经本地代理规则到达），在该行上加 `env` 块覆盖端点：
+MemOS 的 `.env` 通常指向 `host.docker.internal:18181/18182`（在 MemOS 的 docker 网络*内部*有效）。当 MCP 子进程跑在**宿主机**上时，端点必须从宿主机可达。自带的 runner 已默认把端点指向 `127.0.0.1`（常见的宿主机回环发布）；如果你的网关在别处（或只能经本地代理规则到达），在该行上加 `env` 块覆盖端点：
 
 ```yaml
 - id: memos-mcp
@@ -114,7 +125,7 @@ MemOS 的 `.env` 通常指向 `host.docker.internal:18181/18182`（在 MemOS 的
     transport: stdio
     serverName: memos
     command: 'C:/path/to/MemOS/.venv/Scripts/python.exe'
-    args: ['-m', 'memos.api.mcp_serve']
+    args: ['C:/path/to/dsh-memos-bridge/scripts/memos_mcp_runner.py']
     cwd: 'C:/path/to/MemOS'
     env:
       OPENAI_API_BASE: 'http://127.0.0.1:18181/v1'
@@ -128,7 +139,7 @@ MemOS 的 `.env` 通常指向 `host.docker.internal:18181/18182`（在 MemOS 的
 
 ## MemOS 源码补丁
 
-`scripts/patch_memos.py` 对 MemOS 目录应用五个小而幂等的修复（**针对 MemoryOS 2.0.30 验证**）：
+`scripts/patch_memos.py` 对 MemOS 目录应用如下幂等修复（**针对 MemoryOS 2.0.30 验证**）：
 
 1. `src/memos/api/config.py` —— `load_dotenv(override=True)` → `load_dotenv()`，宿主机环境变量覆盖不再被 `.env` 冲掉。
 2. `src/memos/log.py` —— 控制台日志改到 **stderr**；stdout 是 MCP 协议通道，日志行会污染 stdio 流。
@@ -136,6 +147,7 @@ MemOS 的 `.env` 通常指向 `host.docker.internal:18181/18182`（在 MemOS 的
 4. `src/memos/mem_os/utils/default_config.py`：
    - embedder 构造改为读取 `MOS_EMBEDDER_BACKEND` / `MOS_EMBEDDER_API_BASE` / `MOS_EMBEDDER_API_KEY` / `MOS_EMBEDDER_MODEL` / `EMBEDDING_DIMENSION`（对齐 `APIConfig.get_embedder_config`；MCP 默认路径原本会忽略这些并复用聊天端点）；
    - sentence chunker 的 tokenizer 指向**本地** gpt2 `tokenizer.json`——否则 chonkie 会从 huggingface.co 下载 `gpt2`，在部分网络不可达。
+5. `src/memos/graph_dbs/neo4j.py`、`neo4j_community.py`、`tree_text_memory/retrieve/bm25_util.py`、`internet_retriever.py` —— 把搜索路径里的裸 `print()`（原始 Cypher 查询、BM25 命中行等）重定向到 **stderr**；否则 stdout 上的这些输出会在搜索时污染 MCP stdio 流。
 
 `python scripts/patch_memos.py --list` 可查看补丁清单。若某条补丁报"不在补丁前状态"，说明你的 MemOS 版本与 2.0.30 不同——对照差异手动应用。
 
@@ -144,11 +156,12 @@ MemOS 的 `.env` 通常指向 `host.docker.internal:18181/18182`（在 MemOS 的
 | 现象 | 原因 / 处理 |
 | --- | --- |
 | `dsh plugin add` 装出 `Gu` 之类的拆分包 | Windows 下插件路径**含空格**时，dsh 转发给 pnpm 会被拆分。改用 8.3 短路径（如 `C:\Users\GULING~1\...`）或从无空格目录执行 `add .`。 |
+| 启动时一屏 `Couldn't connect to localhost:7687` traceback | Neo4j 没起。先启动 MemOS docker 栈（`docker compose up -d`）；runner 会预检 Neo4j 并打印一行清晰提示，且该行会持续重试——栈起来后工具自动出现，**无需重启 GUI**。 |
 | 重启后行一直 pending | `MEMOS_PYTHON`/`MEMOS_HOME` 配错，或 MemOS venv 未建。先看 `dsh --profile web --dump-config`。 |
 | 启动报 `Graph not found: memosdefaultuser` | Neo4j Community 版 + `.env` 里 `MOS_NEO4J_SHARED_DB=false` → 改为 `true` 并设 `NEO4J_AUTO_CREATE=false`（共享单个 `neo4j` 库）。 |
 | `Tokenizer 'gpt2' could not be loaded ... huggingface.co` | 运行 `setup.py` 下载本地 tokenizer，或设 `HF_ENDPOINT=https://hf-mirror.com`（补丁已把 tokenizer 指向本地文件）。 |
 | `Embeddings request ended with error: Error code: 503` | LLM/Embedding 网关（如 `:18181`/`:18182`）未启动或宿主机不可达——见[宿主机端点覆盖](#宿主机端点覆盖)，启动网关。 |
-| MCP 握手失败 / `Failed to parse JSONRPC` | 日志写到了 stdout——重跑 `patch_memos.py`（补丁 #2）。 |
+| 搜索时出现 `Failed to parse JSONRPC message from server` | 搜索路径里有裸 `print()` 写到 stdout——重跑 `patch_memos.py`（补丁 #5）并重启。 |
 | 启动时的 `pydantic` 序列化警告 | 无害；MemOS 序列化配置对象时会打印。 |
 
 ## 安全说明
