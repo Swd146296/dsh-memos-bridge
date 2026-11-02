@@ -134,9 +134,52 @@ def _emit_env(py: Path, memos: Path) -> None:
         print(f'  setx MEMOS_PYTHON "{py}"')
         print(f'  setx MEMOS_HOME   "{memos}"')
         print("  (open a new terminal / restart the Harness afterwards)")
+        print("  PowerShell, current session only:")
+        print(f"    $env:MEMOS_PYTHON = '{py}'")
+        print(f"    $env:MEMOS_HOME   = '{memos}'")
     else:
         print(f"  export MEMOS_PYTHON='{py}'")
         print(f"  export MEMOS_HOME='{memos}'")
+
+
+def _check(py: Path, memos: Path) -> int:
+    """Report whether the MemOS side is ready, changing nothing."""
+    ok = True
+    print(f"MemOS checkout : {memos}")
+    print(f"venv python    : {py}")
+
+    if not py.exists():
+        print("  MISSING — run the setup without --skip-deps to create it.")
+        return 1
+    print("  present")
+
+    probe = "from memos.api.mcp_serve import MOSMCPServer; print('mcp_serve ok')"
+    if _run([str(py), "-c", probe], cwd=memos):
+        print("import         : ok")
+    else:
+        print("import         : FAILED — re-run the setup without --skip-deps.")
+        ok = False
+
+    patch_script = Path(__file__).with_name("patch_memos.py")
+    if not _run([str(py), str(patch_script), "--memos", str(memos), "--check"]):
+        print("source patches : not all applicable (see above).")
+        ok = False
+
+    tokenizer = memos / "local-tokenizers" / "gpt2" / "tokenizer.json"
+    if verify_tokenizer(tokenizer):
+        print(f"tokenizer      : {tokenizer.stat().st_size} bytes")
+    else:
+        print(f"tokenizer      : MISSING — run the setup without --skip-tokenizer.")
+        ok = False
+
+    print()
+    print("RESULT:", "ready" if ok else "not ready")
+    if ok:
+        print("Next: set MEMOS_PYTHON / MEMOS_HOME, then restart the Harness.")
+        print("Deep check (Neo4j + gateways):")
+        print(f'  "{py}" "{Path(__file__).with_name("memos_mcp_runner.py")}" --check')
+    return 0 if ok else 1
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -155,6 +198,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--emit-env", action="store_true", help="print copy-pasteable MEMOS_* export lines at the end"
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="report whether the MemOS side is ready; installs nothing",
     )
     args = parser.parse_args(argv)
 
@@ -183,6 +231,9 @@ def main(argv: list[str] | None = None) -> int:
     py = _venv_python(venv)
     failures: list[str] = []
 
+    if args.check:
+        return _check(py, memos)
+
     if not args.skip_deps:
         if not py.exists():
             print(f"Creating virtualenv at {venv}")
@@ -203,6 +254,21 @@ def main(argv: list[str] | None = None) -> int:
                 failures.append("pip install")
         if not _run([str(py), "-c", "import memos; print('memos ok')"], cwd=memos):
             failures.append("import memos")
+        else:
+            # `import memos` alone passes on a partially installed tree: the MCP
+            # entrypoint pulls in the tree-memory extras, so probe it directly.
+            if not _run(
+                [str(py), "-c", "from memos.api.mcp_serve import MOSMCPServer; print('mcp_serve ok')"],
+                cwd=memos,
+            ):
+                failures.append("import memos.api.mcp_serve")
+    elif not py.exists():
+        print(
+            f"ERROR: --skip-deps was given but no virtualenv python exists at {py}.\n"
+            "  Create it first (run without --skip-deps) or pass --venv <dir>.",
+            file=sys.stderr,
+        )
+        return 1
 
     if not args.skip_patch:
         patch_script = Path(__file__).with_name("patch_memos.py")
