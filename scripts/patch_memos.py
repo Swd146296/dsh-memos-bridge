@@ -288,13 +288,36 @@ def read_source(path: Path) -> tuple[str, str, bool]:
     """
     raw = path.read_bytes()
     bom = raw.startswith(b"\xef\xbb\xbf")
-    text = raw.decode("utf-8-sig" if bom else "utf-8")
+    try:
+        text = raw.decode("utf-8-sig" if bom else "utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(
+            f"FAILED: {path} is not valid UTF-8 ({exc.reason} at byte {exc.start}). "
+            "Refusing to rewrite a source file this script cannot read back "
+            "losslessly; check the file encoding or restore it from git."
+        ) from exc
     eol = "\r\n" if b"\r\n" in raw else "\n"
     return text.replace("\r\n", "\n"), eol, bom
 
 
 def write_source(path: Path, text: str, eol: str, bom: bool) -> None:
-    path.write_text(text, encoding="utf-8-sig" if bom else "utf-8", newline=eol)
+    """Replace ``path`` atomically, preserving its line endings and mode.
+
+    A plain ``write_text`` truncates first: an interrupt, a full disk, or a
+    locked file mid-write leaves a half-written module that MemOS can no longer
+    import. Writing a sibling temp file and renaming it keeps the on-disk file
+    either fully old or fully new.
+    """
+    tmp = path.with_name(path.name + ".dsh-bridge.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8-sig" if bom else "utf-8", newline=eol) as handle:
+            handle.write(text)
+        shutil.copymode(path, tmp)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
 
 
 def _install_tokenizer(text: str, tokenizer_path: Path) -> tuple[str, int]:
@@ -410,6 +433,30 @@ def _files() -> list[str]:
     return seen
 
 
+def checkout_version(memos: Path) -> str:
+    """Best-effort MemOS version of the checkout (pyproject, then installed dist)."""
+    pyproject = memos / "pyproject.toml"
+    try:
+        text = pyproject.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    match = re.search(r'^\s*version\s*=\s*"([^"]+)"', text, re.MULTILINE)
+    if match:
+        return match.group(1)
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+
+        for dist in ("MemoryOS", "memos"):
+            try:
+                return version(dist)
+            except PackageNotFoundError:
+                continue
+    except Exception:  # noqa: BLE001 - version lookup is advisory only
+        pass
+    return "unknown"
+
+
+
 def revert(memos: Path) -> int:
     restored, skipped = [], []
     for rel in _files():
@@ -466,6 +513,31 @@ def main(argv: list[str] | None = None) -> int:
     if args.revert:
         return revert(memos)
 
+    # Pre-scan before touching anything: failing on the first absent file hides
+    # the other renames, and a halfway-applied patch set is the worst state to
+    # debug. Report every problem at once, then stop.
+    missing = [rel for rel in _files() if not (memos / rel).is_file()]
+    if missing:
+        print(f"MemOS checkout: {memos}", file=sys.stderr)
+        print("FAILED: these expected source files are missing:", file=sys.stderr)
+        for rel in missing:
+            print(f"  {rel}", file=sys.stderr)
+        print(
+            "  Your MemOS tree differs from MemoryOS 2.0.30 (the version this "
+            "bundle is tested against). Nothing was modified.",
+            file=sys.stderr,
+        )
+        return 1
+
+    version = checkout_version(memos)
+    if not version.startswith("2.0."):
+        print(
+            f"WARNING: MemOS checkout reports version {version}; this bundle is "
+            "tested against MemoryOS 2.0.30. Patches are text-anchored, so a "
+            "mismatch usually surfaces as 'blocked' rather than as silent breakage.",
+            file=sys.stderr,
+        )
+
     tokenizer_path = memos / "local-tokenizers" / "gpt2" / "tokenizer.json"
     changed: list[str] = []
     unchanged: list[str] = []
@@ -473,8 +545,6 @@ def main(argv: list[str] | None = None) -> int:
 
     for patch in PATCHES:
         path = memos / patch.rel
-        if not path.exists():
-            raise SystemExit(f"FAILED: {path} not found")
         status, detail = apply_patch(
             path,
             patch,
@@ -489,17 +559,22 @@ def main(argv: list[str] | None = None) -> int:
                 # Fail fast: later patches may depend on earlier ones (the
                 # embedder helper is defined by 4b and used by 4c), so a
                 # partial apply that continues could leave broken source.
-                print(f"MemOS checkout: {memos}")
+                print(f"MemOS checkout: {memos}", file=sys.stderr)
                 if changed:
-                    print("Applied before the failure (re-run --revert to undo):")
-                    print("\n".join(changed))
-                raise SystemExit(
+                    print(
+                        "Applied before the failure (re-run --revert to undo):",
+                        file=sys.stderr,
+                    )
+                    print("\n".join(changed), file=sys.stderr)
+                print(
                     f"FAILED: {path} is not in pre-patch state for: {patch.desc}\n"
                     f"  {detail}\n"
                     "  MemOS version mismatch? This bundle is tested against MemoryOS 2.0.30.\n"
                     "  Run with --check to see every patch that does not fit, then apply the "
-                    "diff by hand (see README 'MemOS source patches')."
+                    "diff by hand (see README 'MemOS source patches').",
+                    file=sys.stderr,
                 )
+                return 1
         elif status in (APPLIED, REFRESHED):
             changed.append(line)
         else:
