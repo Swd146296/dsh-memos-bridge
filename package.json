@@ -1,11 +1,16 @@
 {
   "name": "dsh-memos-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DeepSeek Harness bundle that bridges the MemOS memory service into the agent over MCP: add, search, update and manage memories as native tools (mcp__memos__*).",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Swd146296/dsh-memos-bridge.git"
   },
+  "homepage": "https://github.com/Swd146296/dsh-memos-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/Swd146296/dsh-memos-bridge/issues"
+  },
+  "author": "Swd146296",
   "type": "module",
   "main": "index.js",
   "files": [
@@ -13,6 +18,7 @@
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
+    "CHANGELOG.md",
     "LICENSE",
     "scripts/",
     "setup.ps1",
@@ -24,14 +30,24 @@
       "patch": "./cordis.patch.yml"
     }
   },
+  "scripts": {
+    "test": "node --test tests/provider.test.mjs",
+    "lint": "node --check index.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT",
   "keywords": [
     "dsh",
+    "dsh-plugin",
+    "deepseek",
     "deepseek-harness",
     "memos",
     "memory",
     "mcp",
-    "long-term-memory"
+    "long-term-memory",
+    "agent-memory"
   ],
   "engines": {
     "node": ">=20.0.0"
