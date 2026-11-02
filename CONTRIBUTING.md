@@ -49,7 +49,8 @@ python -m unittest discover -s tests -v
 ```
 
 Python 3.10+ is the floor (the scripts use `X | None` annotations and
-`Path.write_text(newline=...)`). CI runs Linux and Windows.
+`Path.write_text(newline=...)`). Keep the suites green on both Windows and
+Linux — the Windows path is what most users run.
 
 ## Commit style
 

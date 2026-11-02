@@ -2,8 +2,6 @@
 
 **English** | [简体中文](README.zh.md)
 
-[![ci](https://github.com/Swd146296/dsh-memos-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Swd146296/dsh-memos-bridge/actions/workflows/ci.yml)
-
 A [DeepSeek Harness](https://github.com/deepseek-harness/deepseek-harness) **bundle** that bridges the [MemOS](https://github.com/MemTensor/MemOS) memory service into the agent over **MCP**. Install the bundle, run one setup script, restart the Harness, and the agent gains persistent-memory tools named `mcp__memos__*`.
 
 ## What you get
@@ -278,7 +276,8 @@ node --test tests/provider.test.mjs    # provider contract (cwd, namespace, fall
 python -m unittest discover -s tests   # patch engine, patch layer, runner helpers
 ```
 
-Both suites run offline and need no MemOS installation. CI runs them on Linux and Windows across Python 3.10/3.12, and also verifies that `npm pack` ships every file the bundle references.
+Both suites run offline and need no MemOS installation, and they are
+platform-neutral (Windows and Linux, Python 3.10+).
 
 ## License
 

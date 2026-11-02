@@ -2,8 +2,6 @@
 
 [English](README.md) | **简体中文**
 
-[![ci](https://github.com/Swd146296/dsh-memos-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Swd146296/dsh-memos-bridge/actions/workflows/ci.yml)
-
 一个 [DeepSeek Harness](https://github.com/deepseek-harness/deepseek-harness) **组合包（bundle）**，通过 **MCP** 把 [MemOS](https://github.com/MemTensor/MemOS) 记忆服务桥接进 agent。安装组合包、跑一次设置脚本、重启 Harness，agent 就获得了名为 `mcp__memos__*` 的持久记忆工具。
 
 ## 能获得什么
@@ -278,7 +276,7 @@ node --test tests/provider.test.mjs    # 提供方契约（cwd、命名空间、
 python -m unittest discover -s tests   # 补丁引擎、patch 层、runner 辅助函数
 ```
 
-两套测试都可离线运行，且不需要安装 MemOS。CI 会在 Linux 与 Windows 上覆盖 Python 3.10/3.12，并校验 `npm pack` 打出的包里包含组合包引用的每一个文件。
+两套测试都可离线运行、不需要安装 MemOS，并且跨平台：Windows 与 Linux、Python 3.10+ 均通过。
 
 ## 许可证
 
