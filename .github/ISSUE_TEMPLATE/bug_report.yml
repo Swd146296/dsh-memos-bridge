@@ -1,0 +1,80 @@
+name: Bug report
+description: Something is broken — tools missing, start-up errors, search failures
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The three commands below answer most questions
+        before anyone has to guess, so please run them first.
+
+        ```sh
+        python scripts/setup.py --memos <MemOS> --check
+        <MemOS>/.venv/Scripts/python.exe scripts/memos_mcp_runner.py --check
+        <MemOS>/.venv/Scripts/python.exe scripts/smoke_test.py --memos <MemOS> --search
+        ```
+        (On POSIX the venv python is `<MemOS>/.venv/bin/python`.)
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The observable symptom — not the cause. "No mcp__memos__* tools appear" beats "MCP is broken".
+      placeholder: |
+        After restarting dsh, no mcp__memos__* tools are listed. The memos-mcp row stays pending.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      placeholder: The agent can call mcp__memos__add_memory.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnosis output
+      description: Output of the three commands above (redact hostnames, keys, paths if needed).
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: The memos-mcp row
+      description: From `dsh --profile <profile> --dump-config` (redact secrets).
+      render: yaml
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: dsh, dsh-memos-bridge, MemOS, Python, Node, OS.
+      placeholder: 'dsh 0.2.0-rc.2 · bridge 0.2.0 · MemoryOS 2.0.30 · Python 3.12.4 · Node 22.18 · Windows 11'
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: |
+        From `~/.dsh/profiles/<profile>/` or the console. Look for
+        `[dsh-memos-bridge]` prefixed lines and `mcp-client(memos):` errors.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: The MemOS docker stack (Neo4j + Qdrant) is running.
+          required: true
+        - label: I read the Troubleshooting table in the README.
+          required: true

@@ -2,6 +2,12 @@ node_modules/
 .venv/
 __pycache__/
 *.pyc
+*.pyo
 local-tokenizers/
 *.log
 .DS_Store
+.pytest_cache/
+# npm pack output (CI uploads it as an artifact instead)
+*.tgz
+# patch_memos.py scratch file, left behind only by an interrupted write
+*.dsh-bridge.tmp

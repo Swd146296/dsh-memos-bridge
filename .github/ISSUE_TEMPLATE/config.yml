@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Install help / 安装问题
+    url: https://github.com/Swd146296/dsh-memos-bridge#install-the-bundle
+    about: Three install paths (npm, git, release tarball) and the git ls-remote failure.
+  - name: Troubleshooting table
+    url: https://github.com/Swd146296/dsh-memos-bridge#troubleshooting
+    about: Start-up, endpoint, gateway, tokenizer and encoding symptoms.
+  - name: 中文文档 / Chinese docs
+    url: https://github.com/Swd146296/dsh-memos-bridge/blob/main/README.zh.md
+    about: 完整中文说明，含安装、配置、排障与常见问题。

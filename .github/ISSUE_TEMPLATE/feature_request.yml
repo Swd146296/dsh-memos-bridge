@@ -1,0 +1,42 @@
+name: Feature request
+description: Suggest a capability, a MemOS version to support, or a docs improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What can't you do today? Describe the situation, not the solution.
+      placeholder: My MemOS deployment lives on another machine, so 127.0.0.1 defaults are wrong for me and I have to restate the whole config block.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you'd like
+      description: Optional — a concrete idea, config shape, or doc section.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: Workarounds you already use, so we do not propose them again.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Start-up / preflight / reconnect
+        - Endpoint & configuration
+        - MemOS source patches
+        - Setup script / venv
+        - Docs & translation
+        - Packaging & distribution
+    validations:
+      required: true
