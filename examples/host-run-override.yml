@@ -1,10 +1,14 @@
 # Host-run endpoint override example.
 #
 # Copy this block into YOUR profile's cordis.patch.yml (applied after the
-# bundle layer) when the MemOS LLM/embedding gateway lives somewhere other
-# than the runner's default 127.0.0.1 (e.g. it is only reachable through a
-# local proxy rule). An id-targeted patch replaces the row's ENTIRE config,
-# so every key is restated here.
+# bundle layer) when the MemOS LLM/embedding gateway is not reachable at the
+# address the runner would pick — e.g. it lives on another machine, or only
+# behind a local proxy rule. An id-targeted patch replaces the row's ENTIRE
+# config, so every key is restated here.
+#
+# You usually do NOT need this file: the runner keeps real remote endpoints from
+# MemOS's .env as-is, and only maps docker-internal hostnames to the published
+# loopback port. See README "Endpoint resolution".
 - id: memos-mcp
   config:
     transport: stdio
@@ -18,5 +22,13 @@
       MOS_EMBEDDER_API_BASE: 'http://127.0.0.1:18182/compatible-mode/v1'
       MEMRADER_API_BASE: 'http://127.0.0.1:18181/v1'
       QWEN_API_BASE: 'http://127.0.0.1:18181/v1'
-    toolCallTimeoutMs: 60000
+      # Keep the restated row UTF-8 clean as well (see cordis.patch.yml).
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+    toolCallTimeoutMs: 120000
     failOnStartupError: false
+    reconnect:
+      enabled: true
+      initialDelayMs: 5000
+      maxDelayMs: 30000
+      maxAttempts: 100000
