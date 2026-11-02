@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Apply the MemOS source fixes required by dsh-memos-bridge.
 
-The MemOS MCP server (`memos.api.mcp_serve`) has several issues that prevent
+The MemOS MCP server (``memos.api.mcp_serve``) has several issues that prevent
 it from working as an MCP stdio child of DeepSeek Harness. This script applies
 five small, idempotent source patches to a MemOS checkout:
 
@@ -17,30 +17,78 @@ five small, idempotent source patches to a MemOS checkout:
         _API_KEY / _MODEL / EMBEDDING_DIMENSION (mirrors APIConfig)
      b. default chunker tokenizer points at a LOCAL gpt2 tokenizer.json
         (HuggingFace downloads are blocked/unreachable in some networks)
+  5. graph_dbs + tree-text retrieve modules - stray debug prints to stderr
+     (raw Cypher / BM25 lines on stdout corrupt the MCP stdio stream)
 
 Idempotency: a patch is skipped when its post-state marker is already present
-in the file; it is applied only when the pre-state text is found. Anything
-else fails loudly, which usually means the MemOS version differs from the one
-this bundle was tested against (MemoryOS 2.0.30).
+in the file; it is applied only when the pre-state text is found. Anything else
+is reported as "blocked", which usually means the MemOS version differs from
+the one this bundle was tested against (MemoryOS 2.0.30).
+
+Every file is backed up once, to ``<file>.dsh-bridge.bak``, before its first
+change; ``--revert`` restores those backups.
 
 Usage:
     python patch_memos.py --memos /path/to/MemOS
+    python patch_memos.py --memos /path/to/MemOS --check    # dry run
+    python patch_memos.py --memos /path/to/MemOS --revert   # restore backups
     python patch_memos.py --list
+
+Exit codes: 0 = success (all patches applied / all in post-state), 1 = a patch
+is blocked or a file is missing.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
+import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-# (relative path, description, pre-state, post-state, marker, replace_all)
-PATCHES: list[tuple[str, str, str, str, str, bool]] = []
+BACKUP_SUFFIX = ".dsh-bridge.bak"
+TOKENIZER_MARKER = "dsh-memos-bridge: local gpt2 tokenizer"
+
+#: A patch is either plain text (``pre`` -> ``post``) or the special
+#: ``tokenizer`` kind, which rewrites every ``"tokenizer_or_token_counter":
+#: "gpt2"`` line in place, keeping the original indentation.
+KIND_TEXT = "text"
+KIND_TOKENIZER = "tokenizer"
 
 
-def _p(rel: str, desc: str, pre: str, post: str, marker: str, replace_all: bool = False) -> None:
-    PATCHES.append((rel, desc, pre, post, marker, replace_all))
+@dataclass(frozen=True)
+class Patch:
+    rel: str
+    desc: str
+    pre: str = ""
+    post: str = ""
+    marker: str = ""
+    replace_all: bool = False
+    kind: str = KIND_TEXT
+
+    def computed_post(self, tokenizer_path: Path | None) -> str:
+        if self.kind != KIND_TOKENIZER:
+            return self.post
+        if tokenizer_path is None:  # pragma: no cover - guarded by callers
+            raise ValueError("tokenizer path is required for the tokenizer patch")
+        return f'"tokenizer_or_token_counter": "{tokenizer_path.as_posix()}",'
+
+
+PATCHES: list[Patch] = []
+
+
+def _p(
+    rel: str,
+    desc: str,
+    pre: str = "",
+    post: str = "",
+    marker: str = "",
+    replace_all: bool = False,
+    kind: str = KIND_TEXT,
+) -> None:
+    PATCHES.append(Patch(rel, desc, pre, post, marker, replace_all, kind))
 
 
 # 1. api/config.py: stop overriding ambient env with .env values.
@@ -91,7 +139,7 @@ _p(
 )
 
 # 4b. default_config.py: env-aware embedder helper.
-_env_embedder_helper = '''def _env_embedder_config(
+_ENV_EMBEDDER_HELPER = '''def _env_embedder_config(
     openai_api_key: str, openai_api_base: str, embedder_model: str
 ) -> dict[str, Any] | None:
     """Build the embedder config from MOS_EMBEDDER_* env vars when set.
@@ -128,13 +176,13 @@ _p(
     "src/memos/mem_os/utils/default_config.py",
     "insert _env_embedder_config helper",
     "logger = logging.getLogger(__name__)\n\n\ndef get_default_config(",
-    "logger = logging.getLogger(__name__)\n\n\n" + _env_embedder_helper + "def get_default_config(",
+    "logger = logging.getLogger(__name__)\n\n\n" + _ENV_EMBEDDER_HELPER + "def get_default_config(",
     "def _env_embedder_config(",
 )
 
 # 4c. default_config.py: env-aware embedder construction in BOTH
 #     get_default_config and get_default_cube_config (identical blocks).
-_embedder_pre = """    # Universal API embedder configuration (using OpenAI)
+_EMBEDDER_PRE = """    # Universal API embedder configuration (using OpenAI)
     embedder_config = {
         "backend": "universal_api",
         "config": {
@@ -144,7 +192,7 @@ _embedder_pre = """    # Universal API embedder configuration (using OpenAI)
             "base_url": openai_api_base,
         },
     }"""
-_embedder_post = """    # Embedder configuration: env-driven when MOS_EMBEDDER_BACKEND is set,
+_EMBEDDER_POST = """    # Embedder configuration: env-driven when MOS_EMBEDDER_BACKEND is set,
     # otherwise a universal OpenAI-compatible API backed by the chat key/base.
     # (dsh-memos-bridge patch: honors MOS_EMBEDDER_API_BASE / _API_KEY / _MODEL)
     embedder_config = _env_embedder_config(
@@ -163,20 +211,23 @@ _embedder_post = """    # Embedder configuration: env-driven when MOS_EMBEDDER_B
 _p(
     "src/memos/mem_os/utils/default_config.py",
     "env-aware embedder config (both builders)",
-    _embedder_pre,
-    _embedder_post,
+    _EMBEDDER_PRE,
+    _EMBEDDER_POST,
     "embedder_config = _env_embedder_config(",
     replace_all=True,
 )
 
 # 4d. default_config.py: point the sentence-chunker tokenizer at a local
-#     tokenizer.json (path-dependent replacement).
+#     tokenizer.json. Rewritten in place so indentation is preserved and a
+#     moved/renamed MemOS checkout can be re-pointed by re-running the script.
 _p(
     "src/memos/mem_os/utils/default_config.py",
     "chunker tokenizer -> local gpt2 tokenizer.json",
     '"tokenizer_or_token_counter": "gpt2",',
-    "",  # computed per MemOS path; see _apply_patch_file
-    "local-tokenizers",
+    "",
+    TOKENIZER_MARKER,
+    replace_all=True,
+    kind=KIND_TOKENIZER,
 )
 
 # 5. graph_dbs / retrieve modules: route stray debug prints to stderr so they
@@ -212,82 +263,266 @@ _p(
     'file=__import__("sys").stderr',
 )
 
+# Matches the chunker tokenizer line as MemOS ships it, and as this script
+# rewrites it (so a relocated checkout can be re-pointed).
+_GPT2_LINE_RE = re.compile(
+    r'^(?P<indent>[ \t]*)"tokenizer_or_token_counter":\s*"gpt2",[ \t]*$', re.MULTILINE
+)
+_OURS_LINE_RE = re.compile(
+    r'^(?P<indent>[ \t]*)"tokenizer_or_token_counter":\s*"(?P<path>[^"]*)",[ \t]*$',
+    re.MULTILINE,
+)
 
-def _tokenizer_line(tokenizer_path: Path) -> str:
-    return (
-        '                        # dsh-memos-bridge: local gpt2 tokenizer (HuggingFace '
-        "downloads may be blocked); download via scripts/setup.py\n"
-        f'                        "tokenizer_or_token_counter": "{tokenizer_path.as_posix()}",'
-    )
+# Status values.
+APPLIED = "applied"
+REFRESHED = "refreshed"
+ALREADY = "already"
+BLOCKED = "blocked"
 
 
-def _apply_patch_file(
-    path: Path, desc: str, pre: str, post: str, marker: str, replace_all: bool, tokenizer_path: Path | None
-) -> bool:
-    """Apply one textual patch. Returns True when the file changed."""
-    # Read raw bytes to detect the file's line-ending style, then normalize to
-    # '\n' for matching. Writing with the original style keeps the patch to the
-    # intended lines only: without this, text-mode write on Windows rewrites
-    # the whole file as CRLF (MemOS sources are LF, so every line would diff).
+def read_source(path: Path) -> tuple[str, str, bool]:
+    """Read a source file as (text with \\n endings, eol, had_bom).
+
+    Line endings are normalized for matching and restored on write, so a patch
+    touches only the intended lines instead of re-encoding the whole file.
+    """
     raw = path.read_bytes()
+    bom = raw.startswith(b"\xef\xbb\xbf")
+    text = raw.decode("utf-8-sig" if bom else "utf-8")
     eol = "\r\n" if b"\r\n" in raw else "\n"
-    text = raw.decode("utf-8").replace("\r\n", "\n")
+    return text.replace("\r\n", "\n"), eol, bom
 
-    if marker in text:
-        return False  # already applied
 
-    if pre == '"tokenizer_or_token_counter": "gpt2",':
-        post = _tokenizer_line(tokenizer_path)
+def write_source(path: Path, text: str, eol: str, bom: bool) -> None:
+    path.write_text(text, encoding="utf-8-sig" if bom else "utf-8", newline=eol)
 
-    if pre not in text:
-        raise SystemExit(
-            f"FAILED: {path} is not in pre-patch state for: {desc}\n"
-            f"  (MemOS version mismatch? This bundle is tested against MemoryOS 2.0.30.)"
+
+def _install_tokenizer(text: str, tokenizer_path: Path) -> tuple[str, int]:
+    """Rewrite ``"tokenizer_or_token_counter": "gpt2"`` lines to the local file."""
+    target = tokenizer_path.as_posix()
+
+    def _repl(match: re.Match[str]) -> str:
+        indent = match.group("indent")
+        return (
+            f"{indent}# {TOKENIZER_MARKER} (HuggingFace downloads may be blocked); "
+            "written by scripts/setup.py\n"
+            f'{indent}"tokenizer_or_token_counter": "{target}",'
         )
-    if replace_all:
-        new_text = text.replace(pre, post)
+
+    return _GPT2_LINE_RE.subn(_repl, text)
+
+
+def _refresh_tokenizer(text: str, tokenizer_path: Path) -> tuple[str, int]:
+    """Re-point an already-patched tokenizer line at the current checkout.
+
+    Only lines this script owns (i.e. still pointing into a
+    ``local-tokenizers/gpt2/`` directory) are rewritten, so a deliberately
+    customized tokenizer path is left alone.
+    """
+    if TOKENIZER_MARKER not in text:
+        return text, 0
+    target = tokenizer_path.as_posix()
+    count = 0
+
+    def _repl(match: re.Match[str]) -> str:
+        nonlocal count
+        current = match.group("path")
+        if current == target or "local-tokenizers/gpt2/" not in current:
+            return match.group(0)
+        count += 1
+        return f'{match.group("indent")}"tokenizer_or_token_counter": "{target}",'
+
+    return _OURS_LINE_RE.sub(_repl, text), count
+
+
+def backup_path(path: Path) -> Path:
+    return path.with_name(path.name + BACKUP_SUFFIX)
+
+
+def apply_patch(
+    path: Path,
+    patch: Patch,
+    tokenizer_path: Path | None,
+    *,
+    check_only: bool = False,
+    make_backup: bool = True,
+) -> tuple[str, str]:
+    """Apply one patch to one file.
+
+    Returns ``(status, detail)`` where status is one of APPLIED / REFRESHED /
+    ALREADY / BLOCKED. With ``check_only`` nothing is written and APPLIED means
+    "would apply".
+    """
+    text, eol, bom = read_source(path)
+    original = text
+
+    if patch.kind == KIND_TOKENIZER:
+        if tokenizer_path is None:  # pragma: no cover - callers always pass one
+            raise ValueError("tokenizer patch requires a tokenizer path")
+        if TOKENIZER_MARKER in text:
+            text, refreshed = _refresh_tokenizer(text, tokenizer_path)  # type: ignore[arg-type]
+            status = REFRESHED if refreshed else ALREADY
+            detail = f"{refreshed} tokenizer line(s) re-pointed" if refreshed else ""
+        else:
+            text, installed = _install_tokenizer(text, tokenizer_path)  # type: ignore[arg-type]
+            if not installed:
+                return BLOCKED, 'no `"tokenizer_or_token_counter": "gpt2"` line found'
+            status, detail = APPLIED, f"{installed} tokenizer line(s) rewritten"
     else:
-        new_text = text.replace(pre, post, 1)
-    if new_text == text:
-        raise SystemExit(f"FAILED: {path} did not change for: {desc}")
-    path.write_text(new_text, encoding="utf-8", newline=eol)
-    return True
+        if patch.marker and patch.marker in text:
+            return ALREADY, ""
+        if patch.pre not in text:
+            return BLOCKED, "pre-patch state not found"
+        new_text = (
+            text.replace(patch.pre, patch.computed_post(tokenizer_path))
+            if patch.replace_all
+            else text.replace(patch.pre, patch.computed_post(tokenizer_path), 1)
+        )
+        if new_text == text:  # pragma: no cover - defensive
+            return BLOCKED, "replacement produced no change"
+        text, status, detail = new_text, APPLIED, ""
+
+    if text == original:
+        return ALREADY, detail
+    if not check_only:
+        if make_backup:
+            dest = backup_path(path)
+            if not dest.exists():
+                shutil.copy2(path, dest)
+        write_source(path, text, eol, bom)
+    return status, detail
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--memos", default=None, help="MemOS repository root (default: $MEMOS_HOME or ../MemOS)")
-    parser.add_argument("--list", action="store_true", help="list the patches this script would apply")
-    args = parser.parse_args()
+def resolve_memos(value: str | None) -> Path:
+    memos = Path(value or os.environ.get("MEMOS_HOME") or "../MemOS").expanduser().resolve()
+    if not (memos / "pyproject.toml").exists():
+        raise SystemExit(
+            f"MemOS checkout not found at {memos} (pass --memos or set MEMOS_HOME)"
+        )
+    return memos
+
+
+def _files() -> list[str]:
+    seen: list[str] = []
+    for patch in PATCHES:
+        if patch.rel not in seen:
+            seen.append(patch.rel)
+    return seen
+
+
+def revert(memos: Path) -> int:
+    restored, skipped = [], []
+    for rel in _files():
+        dest = backup_path(memos / rel)
+        if dest.exists():
+            shutil.copy2(dest, memos / rel)
+            dest.unlink()
+            restored.append(f"  {rel}")
+        else:
+            skipped.append(f"  {rel} (no backup)")
+    print(f"MemOS checkout: {memos}")
+    print("Restored from backup:")
+    print("\n".join(restored) if restored else "  (none)")
+    if skipped:
+        print("Left untouched:")
+        print("\n".join(skipped))
+    if restored:
+        print("Patches reverted. Re-run without --revert to apply them again.")
+    else:
+        print("Nothing to revert: no .dsh-bridge.bak files were found.")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--memos", default=None, help="MemOS repository root (default: $MEMOS_HOME or ../MemOS)"
+    )
+    parser.add_argument("--list", action="store_true", help="list the patches this script applies")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="dry run: report which patches would apply, write nothing",
+    )
+    parser.add_argument(
+        "--revert", action="store_true", help="restore the .dsh-bridge.bak backups"
+    )
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="do not write .dsh-bridge.bak files (disables --revert)",
+    )
+    args = parser.parse_args(argv)
 
     if args.list:
-        for rel, desc, _pre, _post, _marker, _ra in PATCHES:
-            print(f"{rel}: {desc}")
+        for patch in PATCHES:
+            suffix = "  [dry-run aware]" if patch.kind == KIND_TOKENIZER else ""
+            print(f"{patch.rel}: {patch.desc}{suffix}")
         return 0
 
-    memos = Path(args.memos or os.environ.get("MEMOS_HOME") or "../MemOS").resolve()
-    if not (memos / "pyproject.toml").exists():
-        raise SystemExit(f"MemOS checkout not found at {memos} (pass --memos or set MEMOS_HOME)")
+    memos = resolve_memos(args.memos)
+    if args.revert:
+        return revert(memos)
 
     tokenizer_path = memos / "local-tokenizers" / "gpt2" / "tokenizer.json"
     changed: list[str] = []
     unchanged: list[str] = []
-    for rel, desc, pre, post, marker, replace_all in PATCHES:
-        path = memos / rel
+    blocked: list[str] = []
+
+    for patch in PATCHES:
+        path = memos / patch.rel
         if not path.exists():
             raise SystemExit(f"FAILED: {path} not found")
-        if _apply_patch_file(path, desc, pre, post, marker, replace_all, tokenizer_path):
-            changed.append(f"  {rel}: {desc}")
+        status, detail = apply_patch(
+            path,
+            patch,
+            tokenizer_path,
+            check_only=args.check,
+            make_backup=not args.no_backup,
+        )
+        line = f"  {patch.rel}: {patch.desc}" + (f" ({detail})" if detail else "")
+        if status == BLOCKED:
+            blocked.append(line)
+            if not args.check:
+                # Fail fast: later patches may depend on earlier ones (the
+                # embedder helper is defined by 4b and used by 4c), so a
+                # partial apply that continues could leave broken source.
+                print(f"MemOS checkout: {memos}")
+                if changed:
+                    print("Applied before the failure (re-run --revert to undo):")
+                    print("\n".join(changed))
+                raise SystemExit(
+                    f"FAILED: {path} is not in pre-patch state for: {patch.desc}\n"
+                    f"  {detail}\n"
+                    "  MemOS version mismatch? This bundle is tested against MemoryOS 2.0.30.\n"
+                    "  Run with --check to see every patch that does not fit, then apply the "
+                    "diff by hand (see README 'MemOS source patches')."
+                )
+        elif status in (APPLIED, REFRESHED):
+            changed.append(line)
         else:
-            unchanged.append(f"  {rel}: {desc} (already applied or no-op)")
+            unchanged.append(line)
 
     print(f"MemOS checkout: {memos}")
-    print("Applied:")
+    print("Patches that would apply (dry run, nothing written):" if args.check else "Applied:")
     print("\n".join(changed) if changed else "  (none)")
     print("Skipped (already applied):")
     print("\n".join(unchanged) if unchanged else "  (none)")
-    print("Next: run scripts/setup.py to create the venv and download the tokenizer, "
-          "then configure MEMOS_PYTHON / MEMOS_HOME (see README).")
+    if args.check:
+        if blocked:
+            print("Blocked (MemOS version mismatch):")
+            print("\n".join(blocked))
+            return 1
+        print("All patches fit this checkout.")
+        return 0
+    if changed:
+        print("Backups: *.dsh-bridge.bak next to each patched file (undo with --revert).")
+    print(
+        "Next: run scripts/setup.py to create the venv and download the tokenizer, "
+        "then configure MEMOS_PYTHON / MEMOS_HOME (see README)."
+    )
     return 0
 
 
