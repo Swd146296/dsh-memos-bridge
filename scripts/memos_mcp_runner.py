@@ -259,8 +259,7 @@ def resolve_endpoints(timeout: float = 2.0) -> list[tuple[str, str, str]]:
     ``+loopback`` when the value was rewritten for a host-run deployment.
     """
     ambient = {key for key, _, _ in _ENDPOINTS if os.getenv(key)}
-    env_files = _load_env_files()
-    del env_files  # only the side effect (populated os.environ) matters here
+    _load_env_files()
 
     rewrite = _enabled("MEMOS_MCP_ENDPOINT_REWRITE", default=True)
     report: list[tuple[str, str, str]] = []
